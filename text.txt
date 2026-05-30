@@ -1,0 +1,3 @@
+We are creating an app to help my son practice for the spelling bee comp.
+This the first version. Do few changes:
+when I click start system should read the first word then I type it in and after click entre it check and tell me if it's write or wrong. If wrong it spells for me and ask me to try if I did it righ it says correct and then goes to next word, if I did wrong it spells it again and ask me to try again. System will create a file of word I failed to spell correct with number of time I made the mistake
