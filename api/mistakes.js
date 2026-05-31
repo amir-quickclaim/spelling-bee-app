@@ -8,7 +8,9 @@ const masterFilePath = path.join(mistakesDirectory, "master.json");
 function emptyMistakeFile() {
   return {
     updatedAt: new Date().toISOString(),
-    mistakes: {}
+    mistakes: {},
+    learned: {},
+    progress: {}
   };
 }
 
@@ -38,10 +40,54 @@ function incrementMistake(fileData, word) {
     updatedAt: new Date().toISOString(),
     mistakes: {
       ...(fileData.mistakes || {})
+    },
+    learned: {
+      ...(fileData.learned || {})
+    },
+    progress: {
+      ...(fileData.progress || {})
     }
   };
 
   nextData.mistakes[word] = (nextData.mistakes[word] || 0) + 1;
+  nextData.progress[word] = {
+    consecutiveCorrect: 0,
+    updatedAt: nextData.updatedAt
+  };
+
+  return nextData;
+}
+
+function recordCorrectMistake(fileData, word, isMistakeSession) {
+  const now = new Date().toISOString();
+  const currentProgress = fileData.progress?.[word] || {};
+  const consecutiveCorrect = (currentProgress.consecutiveCorrect || 0) + 1;
+  const nextData = {
+    ...fileData,
+    updatedAt: now,
+    mistakes: {
+      ...(fileData.mistakes || {})
+    },
+    learned: {
+      ...(fileData.learned || {})
+    },
+    progress: {
+      ...(fileData.progress || {}),
+      [word]: {
+        consecutiveCorrect,
+        updatedAt: now
+      }
+    }
+  };
+
+  if (!isMistakeSession && consecutiveCorrect >= 2 && nextData.mistakes[word]) {
+    nextData.learned[word] = {
+      mistakeCount: nextData.mistakes[word],
+      learnedAt: now
+    };
+    delete nextData.mistakes[word];
+    delete nextData.progress[word];
+  }
 
   return nextData;
 }
@@ -62,7 +108,9 @@ export default async function handler(req, res) {
 
       return res.status(200).json({
         sessionMistakes: sessionData.mistakes || {},
-        allTimeMistakes: masterData.mistakes || {}
+        allTimeMistakes: masterData.mistakes || {},
+        learnedMistakes: masterData.learned || {},
+        mistakeProgress: masterData.progress || {}
       });
     }
 
@@ -72,9 +120,29 @@ export default async function handler(req, res) {
 
     const word = String(req.body?.word || "").trim();
     const sessionId = safeSessionId(req.body?.sessionId);
+    const result = String(req.body?.result || "error");
+    const isMistakeSession = Boolean(req.body?.isMistakeSession);
 
     if (!word) {
       return res.status(400).json({ error: "Missing word" });
+    }
+
+    if (result === "success") {
+      const masterData = await readJsonFile(masterFilePath, emptyMistakeFile());
+      const nextMasterData = recordCorrectMistake(
+        masterData,
+        word,
+        isMistakeSession
+      );
+
+      await writeJsonFile(masterFilePath, nextMasterData);
+
+      return res.status(200).json({
+        sessionMistakes: {},
+        allTimeMistakes: nextMasterData.mistakes || {},
+        learnedMistakes: nextMasterData.learned || {},
+        mistakeProgress: nextMasterData.progress || {}
+      });
     }
 
     const sessionFilePath = path.join(sessionsDirectory, `${sessionId}.json`);
@@ -92,7 +160,9 @@ export default async function handler(req, res) {
 
     return res.status(200).json({
       sessionMistakes: nextSessionData.mistakes,
-      allTimeMistakes: nextMasterData.mistakes
+      allTimeMistakes: nextMasterData.mistakes,
+      learnedMistakes: nextMasterData.learned || {},
+      mistakeProgress: nextMasterData.progress || {}
     });
   } catch (error) {
     console.error(error);

@@ -6,3 +6,4 @@ dist/
 .env.local
 .env.*.local
 data/mistakes/
+data/coverage/

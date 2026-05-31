@@ -1,22 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 
-const defaultWords = [
-  "accommodation",
-  "beautiful",
-  "because",
-  "calendar",
-  "definitely",
-  "environment",
-  "favourite",
-  "February",
-  "government",
-  "knowledge",
-  "necessary",
-  "separate",
-  "successful",
-  "tomorrow",
-  "weird"
+const sourceLabels = [
+  "Level1",
+  "Level2",
+  "Level3",
+  "Level4",
+  "Level5",
+  "ALL",
+  "Mistakes"
 ];
+
+const levelLabels = ["Level1", "Level2", "Level3", "Level4", "Level5"];
 
 const australianSpellings = {
   apologize: "apologise",
@@ -46,17 +40,6 @@ function toAustralianSpelling(word) {
   const australianWord = australianSpellings[normalisedWord.toLowerCase()];
 
   return australianWord || normalisedWord;
-}
-
-function normaliseAustralianWordList(value) {
-  return value
-    .split(/(\n|,)/)
-    .map((part) => {
-      if (part === "\n" || part === ",") return part;
-
-      return toAustralianSpelling(part);
-    })
-    .join("");
 }
 
 function getBrowserVoices() {
@@ -162,9 +145,56 @@ function createSessionId() {
   return `liam-${new Date().toISOString().replace(/[:.]/g, "-")}`;
 }
 
+function shuffleWords(words) {
+  const shuffledWords = [...words];
+
+  for (let index = shuffledWords.length - 1; index > 0; index -= 1) {
+    const randomIndex = Math.floor(Math.random() * (index + 1));
+    [shuffledWords[index], shuffledWords[randomIndex]] = [
+      shuffledWords[randomIndex],
+      shuffledWords[index]
+    ];
+  }
+
+  return shuffledWords;
+}
+
+function buildPracticeWords(selectedWords, mistakeWords, isMistakeSession) {
+  const shuffledMistakes = shuffleWords(mistakeWords);
+
+  if (isMistakeSession) {
+    return shuffledMistakes;
+  }
+
+  const mistakeSet = new Set(mistakeWords);
+  const shuffledWords = shuffleWords(
+    selectedWords.filter((word) => !mistakeSet.has(word))
+  );
+
+  if (!shuffledMistakes.length) {
+    return shuffledWords;
+  }
+
+  const scheduledWords = [];
+  let mistakeIndex = 0;
+
+  shuffledWords.forEach((word, index) => {
+    if ((index + 1) % 15 === 0) {
+      scheduledWords.push(shuffledMistakes[mistakeIndex % shuffledMistakes.length]);
+      mistakeIndex += 1;
+    }
+
+    scheduledWords.push(word);
+  });
+
+  return scheduledWords;
+}
+
 export default function App() {
   const answerInputRef = useRef(null);
-  const [wordText, setWordText] = useState(defaultWords.join("\n"));
+  const [wordsByLevel, setWordsByLevel] = useState({});
+  const [meaningsByWord, setMeaningsByWord] = useState({});
+  const [selectedSources, setSelectedSources] = useState(["ALL", "Mistakes"]);
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
   const [started, setStarted] = useState(false);
@@ -173,21 +203,52 @@ export default function App() {
   const [score, setScore] = useState({ correct: 0, attempted: 0 });
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [attemptFeedback, setAttemptFeedback] = useState(null);
-  const [isWordListOpen, setIsWordListOpen] = useState(false);
   const [sessionId, setSessionId] = useState("");
   const [allTimeMistakes, setAllTimeMistakes] = useState({});
+  const [learnedMistakes, setLearnedMistakes] = useState({});
+  const [mistakeProgress, setMistakeProgress] = useState({});
   const [wrongAttempts, setWrongAttempts] = useState(0);
   const [needsCorrectSpelling, setNeedsCorrectSpelling] = useState(false);
+  const [practiceWords, setPracticeWords] = useState([]);
+  const [coverage, setCoverage] = useState({});
 
   const words = useMemo(() => {
-    return wordText
-      .split(/\n|,/)
-      .map((w) => w.trim())
-      .map(toAustralianSpelling)
-      .filter(Boolean);
-  }, [wordText]);
+    const selectedWords = [];
 
-  const currentWord = words[index] || "";
+    if (selectedSources.includes("ALL")) {
+      levelLabels.forEach((level) => {
+        selectedWords.push(...(wordsByLevel[level] || []));
+      });
+    }
+
+    levelLabels.forEach((level) => {
+      if (selectedSources.includes(level)) {
+        selectedWords.push(...(wordsByLevel[level] || []));
+      }
+    });
+
+    if (selectedSources.includes("Mistakes")) {
+      selectedWords.push(...Object.keys(allTimeMistakes));
+    }
+
+    return [...new Set(selectedWords.map(toAustralianSpelling).filter(Boolean))];
+  }, [allTimeMistakes, selectedSources, wordsByLevel]);
+
+  const wordLevels = useMemo(() => {
+    const levels = {};
+
+    levelLabels.forEach((level) => {
+      (wordsByLevel[level] || []).forEach((word) => {
+        levels[toAustralianSpelling(word)] = level;
+      });
+    });
+
+    return levels;
+  }, [wordsByLevel]);
+
+  const currentWord = practiceWords[index] || "";
+  const isMistakeSession =
+    selectedSources.length === 1 && selectedSources.includes("Mistakes");
 
   function focusAnswerInput() {
     requestAnimationFrame(() => {
@@ -202,7 +263,9 @@ export default function App() {
   }, [started, isSpeaking, index]);
 
   useEffect(() => {
+    loadWords();
     loadMistakes();
+    loadCoverage();
   }, []);
 
   function wait(milliseconds) {
@@ -272,7 +335,7 @@ export default function App() {
 
       await wait(250);
       await speakWithBrowserVoice(
-        "Now type the correct spelling before we move to the next word.",
+        "Now type correct spelling.",
         {
           rate: 0.9
         }
@@ -301,6 +364,91 @@ export default function App() {
     }
   }
 
+  function resetPracticeProgress() {
+    window.speechSynthesis?.cancel();
+    setIndex(0);
+    setPracticeWords([]);
+    setAnswer("");
+    setStarted(false);
+    setMessage("Click Start to begin.");
+    setMistakes({});
+    setScore({ correct: 0, attempted: 0 });
+    setAttemptFeedback(null);
+    setSessionId("");
+    setWrongAttempts(0);
+    setNeedsCorrectSpelling(false);
+  }
+
+  function toggleSource(source) {
+    setSelectedSources((prev) => {
+      if (prev.includes(source)) {
+        return prev.filter((item) => item !== source);
+      }
+
+      if (levelLabels.includes(source)) {
+        return [...prev.filter((item) => item !== "ALL"), source];
+      }
+
+      return [...prev, source];
+    });
+    resetPracticeProgress();
+  }
+
+  async function loadWords() {
+    try {
+      const response = await fetch("/api/words");
+
+      if (!response.ok) {
+        throw new Error("Could not load word list");
+      }
+
+      const data = await response.json();
+      setWordsByLevel(data.wordsByLevel || {});
+      setMeaningsByWord(data.meaningsByWord || {});
+    } catch (error) {
+      console.error(error);
+      setMessage("Could not load the spelling bee word list.");
+    }
+  }
+
+  async function loadCoverage() {
+    try {
+      const response = await fetch("/api/coverage");
+
+      if (!response.ok) return;
+
+      const data = await response.json();
+      setCoverage(data.coverage || {});
+    } catch (error) {
+      console.error("Could not load coverage", error);
+    }
+  }
+
+  async function saveCoverage(word, result) {
+    try {
+      const response = await fetch("/api/coverage", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          word,
+          level: wordLevels[word] || "Mistakes",
+          result
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not save coverage");
+      }
+
+      const data = await response.json();
+      setCoverage(data.coverage || {});
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   async function loadMistakes(activeSessionId = "") {
     try {
       const query = activeSessionId
@@ -317,9 +465,18 @@ export default function App() {
       }
 
       setAllTimeMistakes(data.allTimeMistakes || {});
+      setLearnedMistakes(data.learnedMistakes || {});
+      setMistakeProgress(data.mistakeProgress || {});
     } catch (error) {
       console.error("Could not load mistakes", error);
     }
+  }
+
+  function updateMistakeState(data, nextSessionMistakes = mistakes) {
+    setMistakes(data.sessionMistakes || nextSessionMistakes);
+    setAllTimeMistakes(data.allTimeMistakes || {});
+    setLearnedMistakes(data.learnedMistakes || {});
+    setMistakeProgress(data.mistakeProgress || {});
   }
 
   async function saveMistake(word, activeSessionId, nextSessionMistakes) {
@@ -331,7 +488,8 @@ export default function App() {
         },
         body: JSON.stringify({
           sessionId: activeSessionId,
-          word
+          word,
+          result: "error"
         })
       });
 
@@ -340,8 +498,7 @@ export default function App() {
       }
 
       const data = await response.json();
-      setMistakes(data.sessionMistakes || nextSessionMistakes);
-      setAllTimeMistakes(data.allTimeMistakes || {});
+      updateMistakeState(data, nextSessionMistakes);
     } catch (error) {
       console.error(error);
       setMistakes(nextSessionMistakes);
@@ -352,12 +509,50 @@ export default function App() {
     }
   }
 
+  async function saveMistakeSuccess(word) {
+    try {
+      const response = await fetch("/api/mistakes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          word,
+          result: "success",
+          isMistakeSession
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not update mistake progress");
+      }
+
+      const data = await response.json();
+      setAllTimeMistakes(data.allTimeMistakes || {});
+      setLearnedMistakes(data.learnedMistakes || {});
+      setMistakeProgress(data.mistakeProgress || {});
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   async function startPractice() {
-    if (!words.length) return;
+    if (!words.length) {
+      setMessage("Choose at least one word source before starting.");
+      return;
+    }
 
     const nextSessionId = createSessionId();
 
+    const mistakeWords = Object.keys(allTimeMistakes).map(toAustralianSpelling);
+    const nextPracticeWords = buildPracticeWords(
+      words,
+      mistakeWords,
+      isMistakeSession
+    );
+
     setSessionId(nextSessionId);
+    setPracticeWords(nextPracticeWords);
     setStarted(true);
     setIndex(0);
     setAnswer("");
@@ -366,16 +561,19 @@ export default function App() {
     setWrongAttempts(0);
     setNeedsCorrectSpelling(false);
     setMessage("Listen carefully and type the word.");
+    await saveCoverage(nextPracticeWords[0], "asked");
 
     await speak(
-      `Hello Liam, let's practise together and become the school champion. Your first word is ${words[0]}.`
+      `Hello Liam, let's practise together and become the school champion. Your first word is ${nextPracticeWords[0]}.`
     );
   }
 
   async function repeatWord() {
     if (!started || !currentWord) return;
 
-    await speak(`Your word is ${currentWord}. Take your time.`);
+    await speak("Your word is");
+    await wait(500);
+    await speakWithBrowserVoice(currentWord, { rate: 0.75 });
   }
 
   async function checkAnswer() {
@@ -385,6 +583,14 @@ export default function App() {
     const isCorrect = clean(submittedAnswer) === clean(currentWord);
 
     if (isCorrect) {
+      if (!needsCorrectSpelling) {
+        await saveCoverage(currentWord, "success");
+
+        if (allTimeMistakes[currentWord]) {
+          await saveMistakeSuccess(currentWord);
+        }
+      }
+
       setAttemptFeedback({
         status: "correct",
         answer: submittedAnswer,
@@ -401,7 +607,7 @@ export default function App() {
 
       const nextIndex = index + 1;
 
-      if (nextIndex >= words.length) {
+      if (nextIndex >= practiceWords.length) {
         setStarted(false);
         setAnswer("");
         await speak("Correct. You finished the practice. Great work today.");
@@ -415,9 +621,16 @@ export default function App() {
       setNeedsCorrectSpelling(false);
       setMessage("Listen carefully and type the word.");
 
-      await speak(`Correct, the next word is ${words[nextIndex]}.`);
+      await saveCoverage(practiceWords[nextIndex], "asked");
+      await speak("Correct, the next word is");
+      await wait(500);
+      await speak(practiceWords[nextIndex]);
     } else {
       const nextWrongAttempts = wrongAttempts + 1;
+
+      if (!needsCorrectSpelling && wrongAttempts === 0) {
+        await saveCoverage(currentWord, "error");
+      }
 
       setScore((prev) => ({
         correct: prev.correct,
@@ -466,17 +679,7 @@ export default function App() {
   }
 
   function resetPractice() {
-    window.speechSynthesis?.cancel();
-    setIndex(0);
-    setAnswer("");
-    setStarted(false);
-    setMessage("Click Start to begin.");
-    setMistakes({});
-    setScore({ correct: 0, attempted: 0 });
-    setAttemptFeedback(null);
-    setSessionId("");
-    setWrongAttempts(0);
-    setNeedsCorrectSpelling(false);
+    resetPracticeProgress();
   }
 
   function downloadMistakesFile(mistakeList, filename) {
@@ -519,6 +722,27 @@ export default function App() {
     );
   }
 
+  function renderLearnedList() {
+    if (Object.keys(learnedMistakes).length === 0) {
+      return <p>No learned mistakes yet.</p>;
+    }
+
+    return (
+      <table style={styles.table}>
+        <tbody>
+          {Object.entries(learnedMistakes)
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([word, details]) => (
+              <tr key={word}>
+                <td>{word}</td>
+                <td>{details.mistakeCount || 0}</td>
+              </tr>
+            ))}
+        </tbody>
+      </table>
+    );
+  }
+
   function renderAttemptFeedback() {
     if (!attemptFeedback) return null;
 
@@ -534,6 +758,7 @@ export default function App() {
       attemptFeedback.answer,
       attemptFeedback.correctWord
     );
+    const meaning = meaningsByWord[attemptFeedback.correctWord];
 
     return (
       <div style={styles.feedbackArea}>
@@ -549,10 +774,52 @@ export default function App() {
         </div>
 
         {attemptFeedback.showCorrectSpelling !== false && (
-          <div style={styles.correctSpelling}>
-            {attemptFeedback.correctWord}
+          <div style={styles.correctSpellingRow}>
+            <span style={styles.correctSpelling}>
+              {attemptFeedback.correctWord}
+            </span>
+            {meaning && <span style={styles.wordMeaning}>{meaning}</span>}
           </div>
         )}
+      </div>
+    );
+  }
+
+  function renderCoverage() {
+    return (
+      <div style={styles.card}>
+        <h2>Coverage</h2>
+
+        <div style={styles.coverageGrid}>
+          {levelLabels.map((level) => {
+            const levelWords = (wordsByLevel[level] || []).map(toAustralianSpelling);
+            const totalWords = levelWords.length;
+            const askedWords = levelWords.filter(
+              (word) => (coverage[word]?.asked || 0) > 0
+            ).length;
+            const successWords = levelWords.filter(
+              (word) => (coverage[word]?.success || 0) > 0
+            ).length;
+            const errorWords = levelWords.filter(
+              (word) => (coverage[word]?.error || 0) > 0
+            ).length;
+            const coveragePercent = totalWords
+              ? Math.round((askedWords / totalWords) * 100)
+              : 0;
+
+            return (
+              <div key={level} style={styles.coverageItem}>
+                <strong>{level}</strong>
+                <div style={styles.coveragePercent}>{coveragePercent}%</div>
+                <div>
+                  Asked {askedWords}/{totalWords}
+                </div>
+                <div>Correct {successWords}</div>
+                <div>Errors {errorWords}</div>
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }
@@ -562,7 +829,31 @@ export default function App() {
       <div style={styles.container}>
         <h1>Spelling Bee Practice</h1>
 
+        <div style={styles.sourceBar}>
+          {sourceLabels.map((source) => {
+            const isSelected = selectedSources.includes(source);
+
+            return (
+              <button
+                key={source}
+                type="button"
+                style={{
+                  ...styles.sourceButton,
+                  ...(isSelected ? styles.selectedSourceButton : {})
+                }}
+                onClick={() => toggleSource(source)}
+              >
+                {source}
+              </button>
+            );
+          })}
+        </div>
+
         <div style={styles.mainCard}>
+            {isMistakeSession && (
+              <h2 style={styles.practiceTitle}>Mistake Session</h2>
+            )}
+
             <div style={styles.buttonRow}>
               <button style={styles.primaryButton} onClick={startPractice}>
                 Start
@@ -595,28 +886,7 @@ export default function App() {
             </div>
           </div>
 
-        <details
-          style={styles.card}
-          open={isWordListOpen}
-          onToggle={(event) => setIsWordListOpen(event.currentTarget.open)}
-        >
-          <summary style={styles.summary}>Word List</summary>
-
-          <textarea
-            style={styles.textarea}
-            value={wordText}
-            onChange={(e) => {
-              setWordText(normaliseAustralianWordList(e.target.value));
-              setIndex(0);
-              setAnswer("");
-              setAttemptFeedback(null);
-              setWrongAttempts(0);
-              setNeedsCorrectSpelling(false);
-              setStarted(false);
-              setMessage("Click Start to begin.");
-            }}
-          />
-        </details>
+        {renderCoverage()}
 
         <div style={styles.card}>
           <h2>Session Mistakes</h2>
@@ -647,6 +917,10 @@ export default function App() {
           >
             Download All Time CSV
           </button>
+
+          <h2 style={styles.allTimeHeading}>Learned Mistakes</h2>
+
+          {renderLearnedList()}
         </div>
       </div>
     </div>
@@ -672,6 +946,28 @@ const styles = {
     boxShadow: "0 4px 20px rgba(0,0,0,0.08)",
     marginBottom: 20
   },
+  sourceBar: {
+    display: "flex",
+    gap: 10,
+    justifyContent: "center",
+    flexWrap: "wrap",
+    marginBottom: 20
+  },
+  sourceButton: {
+    border: "2px solid #b8c2d6",
+    background: "white",
+    color: "#344054",
+    borderRadius: 999,
+    padding: "10px 18px",
+    fontSize: 16,
+    fontWeight: "bold",
+    cursor: "pointer"
+  },
+  selectedSourceButton: {
+    borderColor: "#3f7cff",
+    background: "#3f7cff",
+    color: "white"
+  },
   mainCard: {
     position: "relative",
     background: "white",
@@ -684,6 +980,11 @@ const styles = {
     flexDirection: "column",
     justifyContent: "center",
     alignItems: "center"
+  },
+  practiceTitle: {
+    marginTop: 0,
+    marginBottom: 18,
+    color: "#344054"
   },
   primaryButton: {
     fontSize: 20,
@@ -742,21 +1043,22 @@ const styles = {
     color: "#16833a",
     fontSize: 40,
     fontWeight: "bold",
-    letterSpacing: 1,
+    letterSpacing: 1
+  },
+  correctSpellingRow: {
+    display: "flex",
+    gap: 16,
+    alignItems: "center",
+    justifyContent: "center",
+    flexWrap: "wrap",
     marginTop: 8
   },
-  summary: {
-    cursor: "pointer",
-    fontSize: 22,
-    fontWeight: "bold"
-  },
-  textarea: {
-    width: "100%",
-    minHeight: 360,
+  wordMeaning: {
+    color: "#111827",
     fontSize: 16,
-    padding: 12,
-    borderRadius: 12,
-    border: "1px solid #ccc"
+    fontWeight: "normal",
+    maxWidth: 520,
+    textAlign: "left"
   },
   message: {
     fontSize: 20,
@@ -764,6 +1066,23 @@ const styles = {
   },
   allTimeHeading: {
     marginTop: 28
+  },
+  coverageGrid: {
+    display: "grid",
+    gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))",
+    gap: 12
+  },
+  coverageItem: {
+    background: "#f8fafc",
+    border: "1px solid #e4e7ec",
+    borderRadius: 12,
+    padding: 14
+  },
+  coveragePercent: {
+    color: "#3f7cff",
+    fontSize: 28,
+    fontWeight: "bold",
+    margin: "8px 0"
   },
   table: {
     width: "100%",
