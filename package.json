@@ -5,6 +5,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@vercel/blob": "^2.4.0",
     "@vitejs/plugin-react": "latest",
     "openai": "^6.39.1",
     "react": "latest",

@@ -1,28 +1,15 @@
-import fs from "node:fs/promises";
 import path from "node:path";
+import { readJsonStore, writeJsonStore } from "../lib/blobStorage.js";
 
 const coverageDirectory = path.join(process.cwd(), "data", "coverage");
 const coverageFilePath = path.join(coverageDirectory, "master.json");
+const coverageBlobPath = "coverage/master.json";
 
 function emptyCoverageFile() {
   return {
     updatedAt: new Date().toISOString(),
     words: {}
   };
-}
-
-async function readJsonFile(filePath, fallback) {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") return fallback;
-    throw error;
-  }
-}
-
-async function writeJsonFile(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function updateCoverage(fileData, { word, level, result }) {
@@ -67,12 +54,11 @@ function updateCoverage(fileData, { word, level, result }) {
 export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
-      const coverageData = await readJsonFile(
-        coverageFilePath,
-        emptyCoverageFile()
+      const coverageData = await readJsonStore(
+        coverageBlobPath,
+        emptyCoverageFile(),
+        coverageFilePath
       );
-
-      await writeJsonFile(coverageFilePath, coverageData);
 
       return res.status(200).json({ coverage: coverageData.words || {} });
     }
@@ -89,9 +75,10 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing coverage details" });
     }
 
-    const coverageData = await readJsonFile(
-      coverageFilePath,
-      emptyCoverageFile()
+    const coverageData = await readJsonStore(
+      coverageBlobPath,
+      emptyCoverageFile(),
+      coverageFilePath
     );
     const nextCoverageData = updateCoverage(coverageData, {
       word,
@@ -99,7 +86,7 @@ export default async function handler(req, res) {
       result
     });
 
-    await writeJsonFile(coverageFilePath, nextCoverageData);
+    await writeJsonStore(coverageBlobPath, nextCoverageData, coverageFilePath);
 
     return res.status(200).json({ coverage: nextCoverageData.words });
   } catch (error) {

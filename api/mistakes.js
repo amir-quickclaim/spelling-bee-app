@@ -1,9 +1,17 @@
-import fs from "node:fs/promises";
 import path from "node:path";
+import { readJsonStore, writeJsonStore } from "../lib/blobStorage.js";
 
 const mistakesDirectory = path.join(process.cwd(), "data", "mistakes");
 const sessionsDirectory = path.join(mistakesDirectory, "sessions");
 const masterFilePath = path.join(mistakesDirectory, "master.json");
+const masterBlobPath = "mistakes/master.json";
+
+function sessionPaths(sessionId) {
+  return {
+    filePath: path.join(sessionsDirectory, `${sessionId}.json`),
+    blobPath: `mistakes/sessions/${sessionId}.json`
+  };
+}
 
 function emptyMistakeFile() {
   return {
@@ -18,20 +26,6 @@ function safeSessionId(sessionId) {
   return String(sessionId || "session")
     .replace(/[^a-zA-Z0-9_-]/g, "-")
     .slice(0, 80);
-}
-
-async function readJsonFile(filePath, fallback) {
-  try {
-    return JSON.parse(await fs.readFile(filePath, "utf8"));
-  } catch (error) {
-    if (error.code === "ENOENT") return fallback;
-    throw error;
-  }
-}
-
-async function writeJsonFile(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`);
 }
 
 function incrementMistake(fileData, word) {
@@ -94,16 +88,19 @@ function recordCorrectMistake(fileData, word, isMistakeSession) {
 
 export default async function handler(req, res) {
   try {
-    await fs.mkdir(sessionsDirectory, { recursive: true });
-
     if (req.method === "GET") {
       const sessionId = safeSessionId(req.query.sessionId);
-      const masterData = await readJsonFile(masterFilePath, emptyMistakeFile());
-      await writeJsonFile(masterFilePath, masterData);
+      const session = sessionPaths(sessionId);
+      const masterData = await readJsonStore(
+        masterBlobPath,
+        emptyMistakeFile(),
+        masterFilePath
+      );
 
-      const sessionData = await readJsonFile(
-        path.join(sessionsDirectory, `${sessionId}.json`),
-        emptyMistakeFile()
+      const sessionData = await readJsonStore(
+        session.blobPath,
+        emptyMistakeFile(),
+        session.filePath
       );
 
       return res.status(200).json({
@@ -128,14 +125,18 @@ export default async function handler(req, res) {
     }
 
     if (result === "success") {
-      const masterData = await readJsonFile(masterFilePath, emptyMistakeFile());
+      const masterData = await readJsonStore(
+        masterBlobPath,
+        emptyMistakeFile(),
+        masterFilePath
+      );
       const nextMasterData = recordCorrectMistake(
         masterData,
         word,
         isMistakeSession
       );
 
-      await writeJsonFile(masterFilePath, nextMasterData);
+      await writeJsonStore(masterBlobPath, nextMasterData, masterFilePath);
 
       return res.status(200).json({
         sessionMistakes: {},
@@ -145,18 +146,26 @@ export default async function handler(req, res) {
       });
     }
 
-    const sessionFilePath = path.join(sessionsDirectory, `${sessionId}.json`);
-    const sessionData = await readJsonFile(sessionFilePath, {
-      startedAt: new Date().toISOString(),
-      ...emptyMistakeFile()
-    });
-    const masterData = await readJsonFile(masterFilePath, emptyMistakeFile());
+    const session = sessionPaths(sessionId);
+    const sessionData = await readJsonStore(
+      session.blobPath,
+      {
+        startedAt: new Date().toISOString(),
+        ...emptyMistakeFile()
+      },
+      session.filePath
+    );
+    const masterData = await readJsonStore(
+      masterBlobPath,
+      emptyMistakeFile(),
+      masterFilePath
+    );
 
     const nextSessionData = incrementMistake(sessionData, word);
     const nextMasterData = incrementMistake(masterData, word);
 
-    await writeJsonFile(sessionFilePath, nextSessionData);
-    await writeJsonFile(masterFilePath, nextMasterData);
+    await writeJsonStore(session.blobPath, nextSessionData, session.filePath);
+    await writeJsonStore(masterBlobPath, nextMasterData, masterFilePath);
 
     return res.status(200).json({
       sessionMistakes: nextSessionData.mistakes,

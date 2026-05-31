@@ -194,6 +194,7 @@ export default function App() {
   const answerInputRef = useRef(null);
   const [wordsByLevel, setWordsByLevel] = useState({});
   const [meaningsByWord, setMeaningsByWord] = useState({});
+  const [examplesByWord, setExamplesByWord] = useState({});
   const [selectedSources, setSelectedSources] = useState(["ALL", "Mistakes"]);
   const [index, setIndex] = useState(0);
   const [answer, setAnswer] = useState("");
@@ -405,6 +406,7 @@ export default function App() {
       const data = await response.json();
       setWordsByLevel(data.wordsByLevel || {});
       setMeaningsByWord(data.meaningsByWord || {});
+      setExamplesByWord(data.examplesByWord || {});
     } catch (error) {
       console.error(error);
       setMessage("Could not load the spelling bee word list.");
@@ -576,6 +578,32 @@ export default function App() {
     await speakWithBrowserVoice(currentWord, { rate: 0.75 });
   }
 
+  async function readDefinition() {
+    if (!started || !currentWord) return;
+
+    const definition = meaningsByWord[currentWord];
+
+    if (!definition) {
+      await speak("I do not have a definition for this word.");
+      return;
+    }
+
+    await speak(`Definition. ${definition}`);
+  }
+
+  async function readExample() {
+    if (!started || !currentWord) return;
+
+    const example = examplesByWord[currentWord];
+
+    if (!example) {
+      await speak("I do not have an example for this word.");
+      return;
+    }
+
+    await speak(`Example. ${example}`);
+  }
+
   async function checkAnswer() {
     if (!started || !answer.trim() || !currentWord) return;
 
@@ -594,7 +622,8 @@ export default function App() {
       setAttemptFeedback({
         status: "correct",
         answer: submittedAnswer,
-        correctWord: currentWord
+        correctWord: currentWord,
+        showClues: needsCorrectSpelling
       });
       setWrongAttempts(0);
       setNeedsCorrectSpelling(false);
@@ -746,10 +775,21 @@ export default function App() {
   function renderAttemptFeedback() {
     if (!attemptFeedback) return null;
 
+    const meaning = meaningsByWord[attemptFeedback.correctWord];
+    const example = examplesByWord[attemptFeedback.correctWord];
+    const shouldShowClues =
+      attemptFeedback.status === "wrong" || attemptFeedback.showClues;
+
     if (attemptFeedback.status === "correct") {
       return (
         <div style={styles.feedbackArea}>
           <div style={styles.correctAnswer}>{attemptFeedback.answer}</div>
+          {shouldShowClues && (
+            <div style={styles.cluePanel}>
+              {meaning && <div><strong>Definition:</strong> {meaning}</div>}
+              {example && <div><strong>Example:</strong> {example}</div>}
+            </div>
+          )}
         </div>
       );
     }
@@ -758,29 +798,36 @@ export default function App() {
       attemptFeedback.answer,
       attemptFeedback.correctWord
     );
-    const meaning = meaningsByWord[attemptFeedback.correctWord];
 
     return (
       <div style={styles.feedbackArea}>
-        <div style={styles.wrongAnswer}>
-          {comparedAnswer.map(({ character, isWrong }, position) => (
-            <span
-              key={`${position}-${character}`}
-              style={isWrong ? styles.wrongCharacter : styles.answerCharacter}
-            >
-              {character}
-            </span>
-          ))}
-        </div>
+        <div style={styles.feedbackContent}>
+          <div style={styles.spellingFeedback}>
+            <div style={styles.wrongAnswer}>
+              {comparedAnswer.map(({ character, isWrong }, position) => (
+                <span
+                  key={`${position}-${character}`}
+                  style={isWrong ? styles.wrongCharacter : styles.answerCharacter}
+                >
+                  {character}
+                </span>
+              ))}
+            </div>
 
-        {attemptFeedback.showCorrectSpelling !== false && (
-          <div style={styles.correctSpellingRow}>
-            <span style={styles.correctSpelling}>
-              {attemptFeedback.correctWord}
-            </span>
-            {meaning && <span style={styles.wordMeaning}>{meaning}</span>}
+            {attemptFeedback.showCorrectSpelling !== false && (
+              <div style={styles.correctSpelling}>
+                {attemptFeedback.correctWord}
+              </div>
+            )}
           </div>
-        )}
+
+          {shouldShowClues && (
+            <div style={styles.cluePanel}>
+              {meaning && <div><strong>Definition:</strong> {meaning}</div>}
+              {example && <div><strong>Example:</strong> {example}</div>}
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -861,6 +908,14 @@ export default function App() {
 
               <button onClick={repeatWord} disabled={!started || isSpeaking}>
                 Repeat Word
+              </button>
+
+              <button onClick={readDefinition} disabled={!started || isSpeaking}>
+                Definition
+              </button>
+
+              <button onClick={readExample} disabled={!started || isSpeaking}>
+                Example
               </button>
 
               <button onClick={resetPractice}>Reset</button>
@@ -1021,6 +1076,17 @@ const styles = {
     minHeight: 92,
     marginBottom: 16
   },
+  feedbackContent: {
+    display: "grid",
+    gridTemplateColumns: "minmax(260px, 1fr) minmax(320px, 1.2fr)",
+    gap: 32,
+    alignItems: "center",
+    width: "100%",
+    maxWidth: 980
+  },
+  spellingFeedback: {
+    textAlign: "center"
+  },
   correctAnswer: {
     color: "#16833a",
     fontSize: 40,
@@ -1045,19 +1111,11 @@ const styles = {
     fontWeight: "bold",
     letterSpacing: 1
   },
-  correctSpellingRow: {
-    display: "flex",
-    gap: 16,
-    alignItems: "center",
-    justifyContent: "center",
-    flexWrap: "wrap",
-    marginTop: 8
-  },
-  wordMeaning: {
+  cluePanel: {
     color: "#111827",
     fontSize: 16,
     fontWeight: "normal",
-    maxWidth: 520,
+    lineHeight: 1.45,
     textAlign: "left"
   },
   message: {

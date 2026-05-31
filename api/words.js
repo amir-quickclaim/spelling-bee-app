@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const wordListPath = path.join(process.cwd(), "data", "spelling_bee_wordlist.csv");
+const wordListPath = path.join(
+  process.cwd(),
+  "data",
+  "spelling_bee_wordlist_with_examples.csv"
+);
 const levelNames = ["Level1", "Level2", "Level3", "Level4", "Level5"];
 
 function parseCsvLine(line) {
@@ -52,20 +56,23 @@ export default async function handler(req, res) {
     const rows = csv.split(/\r?\n/).filter(Boolean);
     const wordsByLevel = Object.fromEntries(levelNames.map((level) => [level, []]));
     const meaningsByWord = {};
+    const examplesByWord = {};
 
     rows.slice(1).forEach((row) => {
-      const [level, word, , meaning] = parseCsvLine(row);
+      const [level, word, , meaning, example] = parseCsvLine(row);
       const levelKey = normaliseLevel(level || "");
       const spellingWord = String(word || "").trim();
       const spellingMeaning = String(meaning || "").trim();
+      const spellingExample = String(example || "").trim();
 
       if (wordsByLevel[levelKey] && spellingWord) {
         wordsByLevel[levelKey].push(spellingWord);
         meaningsByWord[spellingWord] = spellingMeaning;
+        examplesByWord[spellingWord] = spellingExample;
       }
     });
 
-    return res.status(200).json({ wordsByLevel, meaningsByWord });
+    return res.status(200).json({ wordsByLevel, meaningsByWord, examplesByWord });
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Could not load word list" });
