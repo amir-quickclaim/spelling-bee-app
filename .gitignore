@@ -1,3 +1,8 @@
 node_modules/
 dist/
 .vite/
+.vercel
+.env
+.env.local
+.env.*.local
+data/mistakes/
