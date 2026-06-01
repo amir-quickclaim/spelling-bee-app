@@ -192,6 +192,13 @@ function buildPracticeWords(selectedWords, mistakeWords, isMistakeSession) {
 
 export default function App() {
   const answerInputRef = useRef(null);
+  const [role, setRole] = useState(() => {
+    if (typeof window === "undefined") return "";
+
+    return window.sessionStorage.getItem("spellingBeeRole") || "";
+  });
+  const [loginPassword, setLoginPassword] = useState("");
+  const [loginError, setLoginError] = useState("");
   const [wordsByLevel, setWordsByLevel] = useState({});
   const [meaningsByWord, setMeaningsByWord] = useState({});
   const [examplesByWord, setExamplesByWord] = useState({});
@@ -212,6 +219,12 @@ export default function App() {
   const [needsCorrectSpelling, setNeedsCorrectSpelling] = useState(false);
   const [practiceWords, setPracticeWords] = useState([]);
   const [coverage, setCoverage] = useState({});
+  const [parentCoveredWords, setParentCoveredWords] = useState([]);
+  const [parentWordList, setParentWordList] = useState([]);
+  const [isParentWordListReady, setIsParentWordListReady] = useState(false);
+  const [isWordsLoaded, setIsWordsLoaded] = useState(false);
+  const [isMistakesLoaded, setIsMistakesLoaded] = useState(false);
+  const [isCoverageLoaded, setIsCoverageLoaded] = useState(false);
 
   const words = useMemo(() => {
     const selectedWords = [];
@@ -250,6 +263,43 @@ export default function App() {
   const currentWord = practiceWords[index] || "";
   const isMistakeSession =
     selectedSources.length === 1 && selectedSources.includes("Mistakes");
+  const parentWords = useMemo(() => {
+    const coveredWords = new Set(parentCoveredWords);
+
+    return parentWordList.filter((word) => !coveredWords.has(word));
+  }, [parentCoveredWords, parentWordList]);
+
+  function buildParentWordList() {
+    const coveredWords = new Set([
+      ...Object.entries(coverage)
+        .filter(([, wordCoverage]) => (wordCoverage.asked || 0) > 0)
+        .map(([word]) => word)
+    ]);
+    const mistakeWords = Object.keys(allTimeMistakes)
+      .map(toAustralianSpelling)
+      .filter((word) => !coveredWords.has(word));
+    const mistakeSet = new Set(mistakeWords);
+    const normalWords = shuffleWords(words.filter(
+      (word) => !coveredWords.has(word) && !mistakeSet.has(word)
+    ));
+    const scheduledWords = [];
+    let mistakeIndex = 0;
+
+    normalWords.forEach((word, wordIndex) => {
+      scheduledWords.push(word);
+
+      if ((wordIndex + 1) % 10 === 0 && mistakeWords.length) {
+        scheduledWords.push(mistakeWords[mistakeIndex % mistakeWords.length]);
+        mistakeIndex += 1;
+      }
+    });
+
+    if (!normalWords.length) {
+      scheduledWords.push(...mistakeWords);
+    }
+
+    return [...new Set(scheduledWords)];
+  }
 
   function focusAnswerInput() {
     requestAnimationFrame(() => {
@@ -268,6 +318,28 @@ export default function App() {
     loadMistakes();
     loadCoverage();
   }, []);
+
+  useEffect(() => {
+    if (
+      role === "parent" &&
+      !isParentWordListReady &&
+      isWordsLoaded &&
+      isMistakesLoaded &&
+      isCoverageLoaded &&
+      words.length
+    ) {
+      setParentCoveredWords([]);
+      setParentWordList(buildParentWordList());
+      setIsParentWordListReady(true);
+    }
+  }, [
+    isCoverageLoaded,
+    isMistakesLoaded,
+    isParentWordListReady,
+    isWordsLoaded,
+    role,
+    words.length
+  ]);
 
   function wait(milliseconds) {
     return new Promise((resolve) => {
@@ -393,6 +465,44 @@ export default function App() {
       return [...prev, source];
     });
     resetPracticeProgress();
+    setParentCoveredWords([]);
+    setParentWordList([]);
+    setIsParentWordListReady(false);
+  }
+
+  async function login(event) {
+    event.preventDefault();
+    setLoginError("");
+
+    try {
+      const response = await fetch("/api/login", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ password: loginPassword })
+      });
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Could not log in");
+      }
+
+      setRole(data.role);
+      window.sessionStorage.setItem("spellingBeeRole", data.role);
+      setLoginPassword("");
+    } catch (error) {
+      setLoginError(error.message);
+    }
+  }
+
+  function logout() {
+    window.sessionStorage.removeItem("spellingBeeRole");
+    setRole("");
+    resetPracticeProgress();
+    setParentCoveredWords([]);
+    setParentWordList([]);
+    setIsParentWordListReady(false);
   }
 
   async function loadWords() {
@@ -407,9 +517,11 @@ export default function App() {
       setWordsByLevel(data.wordsByLevel || {});
       setMeaningsByWord(data.meaningsByWord || {});
       setExamplesByWord(data.examplesByWord || {});
+      setIsWordsLoaded(true);
     } catch (error) {
       console.error(error);
       setMessage("Could not load the spelling bee word list.");
+      setIsWordsLoaded(true);
     }
   }
 
@@ -417,12 +529,17 @@ export default function App() {
     try {
       const response = await fetch("/api/coverage");
 
-      if (!response.ok) return;
+      if (!response.ok) {
+        setIsCoverageLoaded(true);
+        return;
+      }
 
       const data = await response.json();
       setCoverage(data.coverage || {});
+      setIsCoverageLoaded(true);
     } catch (error) {
       console.error("Could not load coverage", error);
+      setIsCoverageLoaded(true);
     }
   }
 
@@ -458,7 +575,10 @@ export default function App() {
         : "";
       const response = await fetch(`/api/mistakes${query}`);
 
-      if (!response.ok) return;
+      if (!response.ok) {
+        setIsMistakesLoaded(true);
+        return;
+      }
 
       const data = await response.json();
 
@@ -469,8 +589,10 @@ export default function App() {
       setAllTimeMistakes(data.allTimeMistakes || {});
       setLearnedMistakes(data.learnedMistakes || {});
       setMistakeProgress(data.mistakeProgress || {});
+      setIsMistakesLoaded(true);
     } catch (error) {
       console.error("Could not load mistakes", error);
+      setIsMistakesLoaded(true);
     }
   }
 
@@ -536,6 +658,49 @@ export default function App() {
     } catch (error) {
       console.error(error);
     }
+  }
+
+  async function markParentAnswer(word, isCorrect) {
+    const activeSessionId = sessionId || createSessionId();
+
+    if (!sessionId) {
+      setSessionId(activeSessionId);
+    }
+
+    await saveCoverage(word, "asked");
+    setParentCoveredWords((prev) => [...new Set([...prev, word])]);
+
+    if (isCorrect) {
+      await saveCoverage(word, "success");
+
+      if (allTimeMistakes[word]) {
+        await saveMistakeSuccess(word);
+      }
+
+      setScore((prev) => ({
+        correct: prev.correct + 1,
+        attempted: prev.attempted + 1
+      }));
+      return;
+    }
+
+    await saveCoverage(word, "error");
+
+    const nextSessionMistakes = {
+      ...mistakes,
+      [word]: (mistakes[word] || 0) + 1
+    };
+
+    setMistakes(nextSessionMistakes);
+    await saveMistake(word, activeSessionId, nextSessionMistakes);
+    setScore((prev) => ({
+      correct: prev.correct,
+      attempted: prev.attempted + 1
+    }));
+  }
+
+  async function speakParentWord(word) {
+    await speakWithBrowserVoice(word, { rate: 0.75 });
   }
 
   async function startPractice() {
@@ -871,30 +1036,198 @@ export default function App() {
     );
   }
 
+  function renderSourceBar() {
+    return (
+      <div style={styles.sourceBar}>
+        {sourceLabels.map((source) => {
+          const isSelected = selectedSources.includes(source);
+
+          return (
+            <button
+              key={source}
+              type="button"
+              style={{
+                ...styles.sourceButton,
+                ...(isSelected ? styles.selectedSourceButton : {})
+              }}
+              onClick={() => toggleSource(source)}
+            >
+              {source}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function renderLandingPage() {
+    return (
+      <div style={styles.page}>
+        <div style={styles.loginCard}>
+          <h1>Spelling Bee Practice</h1>
+          <form onSubmit={login}>
+            <input
+              style={styles.loginInput}
+              type="password"
+              value={loginPassword}
+              onChange={(event) => setLoginPassword(event.target.value)}
+              placeholder="Enter password"
+              autoFocus
+            />
+            <button style={styles.primaryButton} type="submit">
+              Login
+            </button>
+          </form>
+          {loginError && <p style={styles.loginError}>{loginError}</p>}
+        </div>
+      </div>
+    );
+  }
+
+  function renderParentPage() {
+    return (
+      <div style={styles.page}>
+        <div style={styles.container}>
+          <div style={styles.headerRow}>
+            <h1>Parent Practice</h1>
+            <button onClick={logout}>Logout</button>
+          </div>
+
+          {renderSourceBar()}
+
+          <div style={styles.card}>
+            <h2>Word List</h2>
+            <div style={styles.parentTableWrap}>
+              <table style={styles.parentTable}>
+                <thead>
+                  <tr>
+                    <th>Level</th>
+                    <th>Word</th>
+                    <th>Actions</th>
+                    <th>Definition</th>
+                    <th>Example</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {parentWords.map((word) => {
+                    const isMistakeWord = Boolean(allTimeMistakes[word]);
+                    const level = wordLevels[word] || "Mistakes";
+                    const levelText = level.startsWith("Level")
+                      ? `L${level.replace("Level", "")}`
+                      : "M";
+
+                    return (
+                    <tr
+                      key={word}
+                      style={isMistakeWord ? styles.parentMistakeRow : undefined}
+                    >
+                      <td>
+                        <span style={styles.parentLevelBadge}>{levelText}</span>
+                      </td>
+                      <td style={styles.parentWordCell}>
+                        {word}
+                        <button
+                          style={styles.soundButton}
+                          onClick={() => speakParentWord(word)}
+                          disabled={isSpeaking}
+                          title="Hear word"
+                        >
+                          ▶
+                        </button>
+                      </td>
+                      <td>
+                        <div style={styles.parentActions}>
+                          <button
+                            style={{ ...styles.iconButton, ...styles.correctIconButton }}
+                            onClick={() => markParentAnswer(word, true)}
+                            title="Correct"
+                          >
+                            ✓
+                          </button>
+                          <button
+                            style={{ ...styles.iconButton, ...styles.wrongIconButton }}
+                            onClick={() => markParentAnswer(word, false)}
+                            title="Wrong"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      </td>
+                      <td style={styles.parentDefinitionCell}>
+                        {meaningsByWord[word] || ""}
+                      </td>
+                      <td>{examplesByWord[word] || ""}</td>
+                    </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {renderCoverage()}
+          {renderMistakeCard()}
+        </div>
+      </div>
+    );
+  }
+
+  function renderMistakeCard() {
+    return (
+      <div style={styles.card}>
+        <h2>Session Mistakes</h2>
+
+        {renderMistakeList(mistakes, "No session mistakes yet.")}
+
+        <button
+          onClick={() =>
+            downloadMistakesFile(mistakes, "spelling-bee-session-mistakes.csv")
+          }
+          disabled={!Object.keys(mistakes).length}
+        >
+          Download Session CSV
+        </button>
+
+        <h2 style={styles.allTimeHeading}>All Time Mistakes</h2>
+
+        {renderMistakeList(allTimeMistakes, "No all-time mistakes yet.")}
+
+        <button
+          onClick={() =>
+            downloadMistakesFile(
+              allTimeMistakes,
+              "spelling-bee-all-time-mistakes.csv"
+            )
+          }
+          disabled={!Object.keys(allTimeMistakes).length}
+        >
+          Download All Time CSV
+        </button>
+
+        <h2 style={styles.allTimeHeading}>Learned Mistakes</h2>
+
+        {renderLearnedList()}
+      </div>
+    );
+  }
+
+  if (!role) {
+    return renderLandingPage();
+  }
+
+  if (role === "parent") {
+    return renderParentPage();
+  }
+
   return (
     <div style={styles.page}>
       <div style={styles.container}>
-        <h1>Spelling Bee Practice</h1>
-
-        <div style={styles.sourceBar}>
-          {sourceLabels.map((source) => {
-            const isSelected = selectedSources.includes(source);
-
-            return (
-              <button
-                key={source}
-                type="button"
-                style={{
-                  ...styles.sourceButton,
-                  ...(isSelected ? styles.selectedSourceButton : {})
-                }}
-                onClick={() => toggleSource(source)}
-              >
-                {source}
-              </button>
-            );
-          })}
+        <div style={styles.headerRow}>
+          <h1>Liam Practice</h1>
+          <button onClick={logout}>Logout</button>
         </div>
+
+        {renderSourceBar()}
 
         <div style={styles.mainCard}>
             {isMistakeSession && (
@@ -994,12 +1327,40 @@ const styles = {
     margin: "0 auto",
     textAlign: "center"
   },
+  headerRow: {
+    display: "flex",
+    justifyContent: "space-between",
+    alignItems: "center",
+    gap: 16
+  },
   card: {
     background: "white",
     padding: 24,
     borderRadius: 16,
     boxShadow: "0 4px 20px rgba(0,0,0,0.08)",
     marginBottom: 20
+  },
+  loginCard: {
+    maxWidth: 460,
+    margin: "80px auto",
+    background: "white",
+    padding: 32,
+    borderRadius: 20,
+    boxShadow: "0 8px 32px rgba(0,0,0,0.1)",
+    textAlign: "center"
+  },
+  loginInput: {
+    width: "100%",
+    fontSize: 24,
+    padding: 14,
+    borderRadius: 12,
+    border: "2px solid #b8c2d6",
+    marginBottom: 16,
+    textAlign: "center"
+  },
+  loginError: {
+    color: "#d92d20",
+    fontWeight: "bold"
   },
   sourceBar: {
     display: "flex",
@@ -1063,6 +1424,70 @@ const styles = {
     gap: 10,
     justifyContent: "center",
     flexWrap: "wrap"
+  },
+  parentTableWrap: {
+    maxHeight: 620,
+    overflow: "auto"
+  },
+  parentTable: {
+    width: "100%",
+    borderCollapse: "collapse",
+    textAlign: "left",
+    fontSize: 14
+  },
+  parentWordCell: {
+    fontWeight: "bold",
+    fontSize: 18,
+    whiteSpace: "nowrap"
+  },
+  parentLevelBadge: {
+    display: "inline-block",
+    background: "white",
+    color: "#3f7cff",
+    border: "1px solid #3f7cff",
+    borderRadius: 999,
+    padding: "2px 7px",
+    fontSize: 12,
+    fontWeight: "bold",
+    lineHeight: 1.2
+  },
+  parentMistakeRow: {
+    color: "#d92d20"
+  },
+  parentDefinitionCell: {
+    fontSize: 12,
+    maxWidth: 260
+  },
+  parentActions: {
+    display: "flex",
+    gap: 4,
+    flexWrap: "nowrap"
+  },
+  iconButton: {
+    border: "1px solid #d0d5dd",
+    background: "white",
+    borderRadius: 10,
+    padding: "6px 10px",
+    cursor: "pointer",
+    fontWeight: "bold"
+  },
+  soundButton: {
+    border: "1px solid #d0d5dd",
+    background: "white",
+    color: "#344054",
+    borderRadius: 999,
+    padding: "3px 8px",
+    cursor: "pointer",
+    marginLeft: 8,
+    fontSize: 12
+  },
+  correctIconButton: {
+    color: "#16833a",
+    borderColor: "#16833a"
+  },
+  wrongIconButton: {
+    color: "#d92d20",
+    borderColor: "#d92d20"
   },
   smallScore: {
     position: "absolute",
