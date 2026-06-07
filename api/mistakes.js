@@ -86,6 +86,33 @@ function recordCorrectMistake(fileData, word, isMistakeSession) {
   return nextData;
 }
 
+function markMistakeAsLearned(fileData, word) {
+  const now = new Date().toISOString();
+  const mistakeCount = fileData.mistakes?.[word] || 0;
+  const nextData = {
+    ...fileData,
+    updatedAt: now,
+    mistakes: {
+      ...(fileData.mistakes || {})
+    },
+    learned: {
+      ...(fileData.learned || {})
+    },
+    progress: {
+      ...(fileData.progress || {})
+    }
+  };
+
+  nextData.learned[word] = {
+    mistakeCount,
+    learnedAt: now
+  };
+  delete nextData.mistakes[word];
+  delete nextData.progress[word];
+
+  return nextData;
+}
+
 export default async function handler(req, res) {
   try {
     if (req.method === "GET") {
@@ -124,17 +151,16 @@ export default async function handler(req, res) {
       return res.status(400).json({ error: "Missing word" });
     }
 
-    if (result === "success") {
+    if (result === "success" || result === "learned") {
       const masterData = await readJsonStore(
         masterBlobPath,
         emptyMistakeFile(),
         masterFilePath
       );
-      const nextMasterData = recordCorrectMistake(
-        masterData,
-        word,
-        isMistakeSession
-      );
+      const nextMasterData =
+        result === "learned"
+          ? markMistakeAsLearned(masterData, word)
+          : recordCorrectMistake(masterData, word, isMistakeSession);
 
       await writeJsonStore(masterBlobPath, nextMasterData, masterFilePath);
 

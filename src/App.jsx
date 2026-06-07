@@ -347,6 +347,12 @@ export default function App() {
     });
   }
 
+  function saveInBackground(savePromise) {
+    savePromise.catch((error) => {
+      console.error(error);
+    });
+  }
+
   function spokenCharacter(character) {
     if (character === " ") return "space";
     if (character === "-") return "hyphen";
@@ -545,6 +551,34 @@ export default function App() {
 
   async function saveCoverage(word, result) {
     try {
+      const nextWordCoverage = {
+        ...(coverage[word] || {
+          level: wordLevels[word] || "Mistakes",
+          asked: 0,
+          success: 0,
+          error: 0
+        })
+      };
+
+      if (result === "asked" || result === "success" || result === "error") {
+        nextWordCoverage.asked = (nextWordCoverage.asked || 0) + 1;
+      }
+
+      if (result === "success") {
+        nextWordCoverage.success = (nextWordCoverage.success || 0) + 1;
+        nextWordCoverage.lastResult = "success";
+      }
+
+      if (result === "error") {
+        nextWordCoverage.error = (nextWordCoverage.error || 0) + 1;
+        nextWordCoverage.lastResult = "error";
+      }
+
+      setCoverage((prev) => ({
+        ...prev,
+        [word]: nextWordCoverage
+      }));
+
       const response = await fetch("/api/coverage", {
         method: "POST",
         headers: {
@@ -562,7 +596,10 @@ export default function App() {
       }
 
       const data = await response.json();
-      setCoverage(data.coverage || {});
+
+      if (data.coverage) {
+        setCoverage(data.coverage);
+      }
     } catch (error) {
       console.error(error);
     }
@@ -660,6 +697,32 @@ export default function App() {
     }
   }
 
+  async function saveLearnedMistake(word) {
+    try {
+      const response = await fetch("/api/mistakes", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          word,
+          result: "learned"
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error("Could not mark mistake as learned");
+      }
+
+      const data = await response.json();
+      setAllTimeMistakes(data.allTimeMistakes || {});
+      setLearnedMistakes(data.learnedMistakes || {});
+      setMistakeProgress(data.mistakeProgress || {});
+    } catch (error) {
+      console.error(error);
+    }
+  }
+
   async function markParentAnswer(word, isCorrect) {
     const activeSessionId = sessionId || createSessionId();
 
@@ -667,7 +730,6 @@ export default function App() {
       setSessionId(activeSessionId);
     }
 
-    await saveCoverage(word, "asked");
     setParentCoveredWords((prev) => [...new Set([...prev, word])]);
 
     if (isCorrect) {
@@ -685,6 +747,52 @@ export default function App() {
     }
 
     await saveCoverage(word, "error");
+
+    const nextSessionMistakes = {
+      ...mistakes,
+      [word]: (mistakes[word] || 0) + 1
+    };
+
+    setMistakes(nextSessionMistakes);
+    await saveMistake(word, activeSessionId, nextSessionMistakes);
+    setScore((prev) => ({
+      correct: prev.correct,
+      attempted: prev.attempted + 1
+    }));
+  }
+
+  async function markParentMistakeAnswer(word, isCorrect) {
+    const activeSessionId = sessionId || createSessionId();
+
+    if (!sessionId) {
+      setSessionId(activeSessionId);
+    }
+
+    if (isCorrect) {
+      const mistakeCount = allTimeMistakes[word] || 0;
+
+      setAllTimeMistakes((prev) => {
+        const nextMistakes = { ...prev };
+        delete nextMistakes[word];
+        return nextMistakes;
+      });
+      setLearnedMistakes((prev) => ({
+        ...prev,
+        [word]: {
+          mistakeCount,
+          learnedAt: new Date().toISOString()
+        }
+      }));
+      saveInBackground(saveCoverage(word, "success"));
+      await saveLearnedMistake(word);
+      setScore((prev) => ({
+        correct: prev.correct + 1,
+        attempted: prev.attempted + 1
+      }));
+      return;
+    }
+
+    saveInBackground(saveCoverage(word, "error"));
 
     const nextSessionMistakes = {
       ...mistakes,
@@ -728,7 +836,7 @@ export default function App() {
     setWrongAttempts(0);
     setNeedsCorrectSpelling(false);
     setMessage("Listen carefully and type the word.");
-    await saveCoverage(nextPracticeWords[0], "asked");
+    saveInBackground(saveCoverage(nextPracticeWords[0], "asked"));
 
     await speak(
       `Hello Liam, let's practise together and become the school champion. Your first word is ${nextPracticeWords[0]}.`
@@ -777,10 +885,10 @@ export default function App() {
 
     if (isCorrect) {
       if (!needsCorrectSpelling) {
-        await saveCoverage(currentWord, "success");
+        saveInBackground(saveCoverage(currentWord, "success"));
 
         if (allTimeMistakes[currentWord]) {
-          await saveMistakeSuccess(currentWord);
+          saveInBackground(saveMistakeSuccess(currentWord));
         }
       }
 
@@ -815,7 +923,7 @@ export default function App() {
       setNeedsCorrectSpelling(false);
       setMessage("Listen carefully and type the word.");
 
-      await saveCoverage(practiceWords[nextIndex], "asked");
+      saveInBackground(saveCoverage(practiceWords[nextIndex], "asked"));
       await speak("Correct, the next word is");
       await wait(500);
       await speak(practiceWords[nextIndex]);
@@ -823,7 +931,7 @@ export default function App() {
       const nextWrongAttempts = wrongAttempts + 1;
 
       if (!needsCorrectSpelling && wrongAttempts === 0) {
-        await saveCoverage(currentWord, "error");
+        saveInBackground(saveCoverage(currentWord, "error"));
       }
 
       setScore((prev) => ({
@@ -846,7 +954,7 @@ export default function App() {
         ...prev,
         [currentWord]: (prev[currentWord] || 0) + 1
       }));
-      await saveMistake(currentWord, activeSessionId, nextSessionMistakes);
+      saveInBackground(saveMistake(currentWord, activeSessionId, nextSessionMistakes));
 
       setAnswer("");
 
@@ -876,14 +984,31 @@ export default function App() {
     resetPracticeProgress();
   }
 
+  function csvValue(value) {
+    const text = String(value ?? "");
+
+    if (/[",\n]/.test(text)) {
+      return `"${text.replace(/"/g, '""')}"`;
+    }
+
+    return text;
+  }
+
   function downloadMistakesFile(mistakeList, filename) {
-    const rows = [["word", "mistake_count"]];
+    const rows = [["word", "mistake_count", "definition", "example"]];
 
     Object.entries(mistakeList)
       .sort((a, b) => b[1] - a[1])
-      .forEach(([word, count]) => rows.push([word, count]));
+      .forEach(([word, count]) =>
+        rows.push([
+          word,
+          count,
+          meaningsByWord[word] || "",
+          examplesByWord[word] || ""
+        ])
+      );
 
-    const csv = rows.map((row) => row.join(",")).join("\n");
+    const csv = rows.map((row) => row.map(csvValue).join(",")).join("\n");
     const blob = new Blob([csv], { type: "text/csv" });
     const url = URL.createObjectURL(blob);
 
@@ -895,7 +1020,7 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  function renderMistakeList(mistakeList, emptyText) {
+  function renderMistakeList(mistakeList, emptyText, options = {}) {
     if (Object.keys(mistakeList).length === 0) {
       return <p>{emptyText}</p>;
     }
@@ -905,15 +1030,64 @@ export default function App() {
         <tbody>
           {Object.entries(mistakeList)
             .sort((a, b) => b[1] - a[1])
-            .map(([word, count]) => (
-              <tr key={word}>
-                <td>{word}</td>
-                <td>{count}</td>
-              </tr>
-            ))}
+            .map(([word, count]) => {
+              const meaning = meaningsByWord[word] || "";
+              const example = examplesByWord[word] || "";
+
+              return (
+                <tr key={word}>
+                  <td style={styles.mistakeWordCell}>
+                    {word}
+                    {options.showParentActions && (
+                      <button
+                        style={styles.soundButton}
+                        onClick={() => speakParentWord(word)}
+                        disabled={isSpeaking}
+                        title="Hear word"
+                      >
+                        ▶
+                      </button>
+                    )}
+                  </td>
+                  <td>{count}</td>
+                  {options.showParentActions && (
+                    <td>
+                      <div style={styles.parentActions}>
+                        <button
+                          style={{
+                            ...styles.iconButton,
+                            ...styles.correctIconButton
+                          }}
+                          onClick={() => markParentMistakeAnswer(word, true)}
+                          title="Learned"
+                        >
+                          ✓
+                        </button>
+                        <button
+                          style={{
+                            ...styles.iconButton,
+                            ...styles.wrongIconButton
+                          }}
+                          onClick={() => markParentMistakeAnswer(word, false)}
+                          title="Still wrong"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                  <td style={styles.mistakeDetailCell}>{meaning}</td>
+                  <td style={styles.mistakeDetailCell}>{example}</td>
+                </tr>
+              );
+            })}
         </tbody>
       </table>
     );
+  }
+
+  function totalMistakes(mistakeList) {
+    return Object.values(mistakeList).reduce((total, count) => total + count, 0);
   }
 
   function renderLearnedList() {
@@ -1095,6 +1269,8 @@ export default function App() {
 
           {renderSourceBar()}
 
+          {renderCoverage()}
+
           <div style={styles.card}>
             <h2>Word List</h2>
             <div style={styles.parentTableWrap}>
@@ -1165,19 +1341,25 @@ export default function App() {
             </div>
           </div>
 
-          {renderCoverage()}
-          {renderMistakeCard()}
+          {renderMistakeCard({ showParentActions: true })}
         </div>
       </div>
     );
   }
 
-  function renderMistakeCard() {
+  function renderMistakeCard(options = {}) {
     return (
       <div style={styles.card}>
         <h2>Session Mistakes</h2>
+        <p style={styles.mistakeTotal}>
+          Total: {totalMistakes(mistakes)}
+        </p>
 
-        {renderMistakeList(mistakes, "No session mistakes yet.")}
+        {renderMistakeList(
+          mistakes,
+          "No session mistakes yet.",
+          options
+        )}
 
         <button
           onClick={() =>
@@ -1189,8 +1371,15 @@ export default function App() {
         </button>
 
         <h2 style={styles.allTimeHeading}>All Time Mistakes</h2>
+        <p style={styles.mistakeTotal}>
+          Total: {totalMistakes(allTimeMistakes)}
+        </p>
 
-        {renderMistakeList(allTimeMistakes, "No all-time mistakes yet.")}
+        {renderMistakeList(
+          allTimeMistakes,
+          "No all-time mistakes yet.",
+          options
+        )}
 
         <button
           onClick={() =>
@@ -1259,6 +1448,10 @@ export default function App() {
               style={styles.input}
               value={answer}
               disabled={!started}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="none"
+              spellCheck={false}
               onChange={(e) => setAnswer(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !isSpeaking) checkAnswer();
@@ -1549,6 +1742,19 @@ const styles = {
   },
   allTimeHeading: {
     marginTop: 28
+  },
+  mistakeTotal: {
+    fontWeight: "bold",
+    color: "#344054"
+  },
+  mistakeWordCell: {
+    fontWeight: "bold",
+    whiteSpace: "nowrap"
+  },
+  mistakeDetailCell: {
+    fontSize: 13,
+    textAlign: "left",
+    color: "#344054"
   },
   coverageGrid: {
     display: "grid",
