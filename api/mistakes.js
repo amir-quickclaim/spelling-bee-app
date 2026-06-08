@@ -28,6 +28,20 @@ function safeSessionId(sessionId) {
     .slice(0, 80);
 }
 
+function findMistakeWordKey(mistakes, word) {
+  if (!mistakes?.[word]) {
+    const lowerWord = word.toLowerCase();
+
+    return (
+      Object.keys(mistakes || {}).find(
+        (mistakeWord) => mistakeWord.toLowerCase() === lowerWord
+      ) || word
+    );
+  }
+
+  return word;
+}
+
 function incrementMistake(fileData, word) {
   const nextData = {
     ...fileData,
@@ -88,7 +102,8 @@ function recordCorrectMistake(fileData, word, isMistakeSession) {
 
 function markMistakeAsLearned(fileData, word) {
   const now = new Date().toISOString();
-  const mistakeCount = fileData.mistakes?.[word] || 0;
+  const mistakeKey = findMistakeWordKey(fileData.mistakes, word);
+  const mistakeCount = fileData.mistakes?.[mistakeKey] || 0;
   const nextData = {
     ...fileData,
     updatedAt: now,
@@ -103,14 +118,38 @@ function markMistakeAsLearned(fileData, word) {
     }
   };
 
-  nextData.learned[word] = {
+  nextData.learned[mistakeKey] = {
     mistakeCount,
     learnedAt: now
   };
-  delete nextData.mistakes[word];
-  delete nextData.progress[word];
+  delete nextData.mistakes[mistakeKey];
+  delete nextData.progress[mistakeKey];
 
   return nextData;
+}
+
+function buildMistakeResponse(masterData, sessionMistakes = {}) {
+  const learned = masterData.learned || {};
+  const learnedKeys = new Set(
+    Object.keys(learned).map((word) => word.toLowerCase())
+  );
+  const allTimeMistakes = Object.fromEntries(
+    Object.entries(masterData.mistakes || {}).filter(
+      ([word]) => !learnedKeys.has(word.toLowerCase())
+    )
+  );
+  const filteredSessionMistakes = Object.fromEntries(
+    Object.entries(sessionMistakes).filter(
+      ([word]) => !learnedKeys.has(word.toLowerCase())
+    )
+  );
+
+  return {
+    sessionMistakes: filteredSessionMistakes,
+    allTimeMistakes,
+    learnedMistakes: learned,
+    mistakeProgress: masterData.progress || {}
+  };
 }
 
 export default async function handler(req, res) {
@@ -130,12 +169,9 @@ export default async function handler(req, res) {
         session.filePath
       );
 
-      return res.status(200).json({
-        sessionMistakes: sessionData.mistakes || {},
-        allTimeMistakes: masterData.mistakes || {},
-        learnedMistakes: masterData.learned || {},
-        mistakeProgress: masterData.progress || {}
-      });
+      return res.status(200).json(
+        buildMistakeResponse(masterData, sessionData.mistakes || {})
+      );
     }
 
     if (req.method !== "POST") {
@@ -164,12 +200,7 @@ export default async function handler(req, res) {
 
       await writeJsonStore(masterBlobPath, nextMasterData, masterFilePath);
 
-      return res.status(200).json({
-        sessionMistakes: {},
-        allTimeMistakes: nextMasterData.mistakes || {},
-        learnedMistakes: nextMasterData.learned || {},
-        mistakeProgress: nextMasterData.progress || {}
-      });
+      return res.status(200).json(buildMistakeResponse(nextMasterData));
     }
 
     const session = sessionPaths(sessionId);
@@ -193,12 +224,9 @@ export default async function handler(req, res) {
     await writeJsonStore(session.blobPath, nextSessionData, session.filePath);
     await writeJsonStore(masterBlobPath, nextMasterData, masterFilePath);
 
-    return res.status(200).json({
-      sessionMistakes: nextSessionData.mistakes,
-      allTimeMistakes: nextMasterData.mistakes,
-      learnedMistakes: nextMasterData.learned || {},
-      mistakeProgress: nextMasterData.progress || {}
-    });
+    return res.status(200).json(
+      buildMistakeResponse(nextMasterData, nextSessionData.mistakes || {})
+    );
   } catch (error) {
     console.error(error);
     return res.status(500).json({ error: "Could not save mistake" });

@@ -192,6 +192,8 @@ function buildPracticeWords(selectedWords, mistakeWords, isMistakeSession) {
 
 export default function App() {
   const answerInputRef = useRef(null);
+  const learnedMistakesRef = useRef({});
+  const mistakesLoadVersion = useRef(0);
   const [role, setRole] = useState(() => {
     if (typeof window === "undefined") return "";
 
@@ -265,9 +267,15 @@ export default function App() {
     selectedSources.length === 1 && selectedSources.includes("Mistakes");
   const parentWords = useMemo(() => {
     const coveredWords = new Set(parentCoveredWords);
+    const learnedWordSet = new Set(
+      Object.keys(learnedMistakes).map((word) => word.toLowerCase())
+    );
 
-    return parentWordList.filter((word) => !coveredWords.has(word));
-  }, [parentCoveredWords, parentWordList]);
+    return parentWordList.filter(
+      (word) =>
+        !coveredWords.has(word) && !learnedWordSet.has(word.toLowerCase())
+    );
+  }, [learnedMistakes, parentCoveredWords, parentWordList]);
 
   function buildParentWordList() {
     const coveredWords = new Set([
@@ -275,9 +283,16 @@ export default function App() {
         .filter(([, wordCoverage]) => (wordCoverage.asked || 0) > 0)
         .map(([word]) => word)
     ]);
+    const learnedWordSet = new Set(
+      Object.keys(learnedMistakes).map((word) => word.toLowerCase())
+    );
     const mistakeWords = Object.keys(allTimeMistakes)
       .map(toAustralianSpelling)
-      .filter((word) => !coveredWords.has(word));
+      .filter(
+        (word) =>
+          !coveredWords.has(word) &&
+          !learnedWordSet.has(word.toLowerCase())
+      );
     const mistakeSet = new Set(mistakeWords);
     const normalWords = shuffleWords(words.filter(
       (word) => !coveredWords.has(word) && !mistakeSet.has(word)
@@ -312,6 +327,10 @@ export default function App() {
       focusAnswerInput();
     }
   }, [started, isSpeaking, index]);
+
+  useEffect(() => {
+    learnedMistakesRef.current = learnedMistakes;
+  }, [learnedMistakes]);
 
   useEffect(() => {
     loadWords();
@@ -605,7 +624,50 @@ export default function App() {
     }
   }
 
+  function bumpMistakesVersion() {
+    mistakesLoadVersion.current += 1;
+  }
+
+  function filterMistakesAgainstLearned(mistakeList, learnedList) {
+    const learnedKeys = new Set(
+      Object.keys(learnedList).map((word) => word.toLowerCase())
+    );
+
+    return Object.fromEntries(
+      Object.entries(mistakeList).filter(
+        ([word]) => !learnedKeys.has(word.toLowerCase())
+      )
+    );
+  }
+
+  function applyMistakeServerData(data, options = {}) {
+    const mergedLearned = {
+      ...learnedMistakesRef.current,
+      ...(data.learnedMistakes || {}),
+      ...(options.extraLearned || {})
+    };
+    const nextAllTimeMistakes = filterMistakesAgainstLearned(
+      data.allTimeMistakes || {},
+      mergedLearned
+    );
+    const nextSessionMistakes = filterMistakesAgainstLearned(
+      options.nextSessionMistakes ?? data.sessionMistakes ?? mistakes,
+      mergedLearned
+    );
+
+    learnedMistakesRef.current = mergedLearned;
+    setLearnedMistakes(mergedLearned);
+    setAllTimeMistakes(nextAllTimeMistakes);
+    setMistakeProgress(data.mistakeProgress || {});
+
+    if (options.updateSession !== false) {
+      setMistakes(nextSessionMistakes);
+    }
+  }
+
   async function loadMistakes(activeSessionId = "") {
+    const requestVersion = mistakesLoadVersion.current;
+
     try {
       const query = activeSessionId
         ? `?sessionId=${encodeURIComponent(activeSessionId)}`
@@ -617,15 +679,16 @@ export default function App() {
         return;
       }
 
-      const data = await response.json();
-
-      if (activeSessionId) {
-        setMistakes(data.sessionMistakes || {});
+      if (requestVersion !== mistakesLoadVersion.current) {
+        setIsMistakesLoaded(true);
+        return;
       }
 
-      setAllTimeMistakes(data.allTimeMistakes || {});
-      setLearnedMistakes(data.learnedMistakes || {});
-      setMistakeProgress(data.mistakeProgress || {});
+      const data = await response.json();
+
+      applyMistakeServerData(data, {
+        updateSession: Boolean(activeSessionId)
+      });
       setIsMistakesLoaded(true);
     } catch (error) {
       console.error("Could not load mistakes", error);
@@ -634,10 +697,7 @@ export default function App() {
   }
 
   function updateMistakeState(data, nextSessionMistakes = mistakes) {
-    setMistakes(data.sessionMistakes || nextSessionMistakes);
-    setAllTimeMistakes(data.allTimeMistakes || {});
-    setLearnedMistakes(data.learnedMistakes || {});
-    setMistakeProgress(data.mistakeProgress || {});
+    applyMistakeServerData(data, { nextSessionMistakes });
   }
 
   async function saveMistake(word, activeSessionId, nextSessionMistakes) {
@@ -689,9 +749,7 @@ export default function App() {
       }
 
       const data = await response.json();
-      setAllTimeMistakes(data.allTimeMistakes || {});
-      setLearnedMistakes(data.learnedMistakes || {});
-      setMistakeProgress(data.mistakeProgress || {});
+      applyMistakeServerData(data);
     } catch (error) {
       console.error(error);
     }
@@ -715,9 +773,7 @@ export default function App() {
       }
 
       const data = await response.json();
-      setAllTimeMistakes(data.allTimeMistakes || {});
-      setLearnedMistakes(data.learnedMistakes || {});
-      setMistakeProgress(data.mistakeProgress || {});
+      applyMistakeServerData(data);
     } catch (error) {
       console.error(error);
     }
@@ -769,22 +825,28 @@ export default function App() {
     }
 
     if (isCorrect) {
-      const mistakeCount = allTimeMistakes[word] || 0;
+      bumpMistakesVersion();
 
-      setAllTimeMistakes((prev) => {
-        const nextMistakes = { ...prev };
-        delete nextMistakes[word];
-        return nextMistakes;
-      });
-      setLearnedMistakes((prev) => ({
-        ...prev,
-        [word]: {
-          mistakeCount,
-          learnedAt: new Date().toISOString()
-        }
-      }));
+      const mistakeKey =
+        Object.keys(allTimeMistakes).find(
+          (mistakeWord) => mistakeWord.toLowerCase() === word.toLowerCase()
+        ) || word;
+      const mistakeCount = allTimeMistakes[mistakeKey] || 0;
+      const learnedEntry = {
+        mistakeCount,
+        learnedAt: new Date().toISOString()
+      };
+      const nextLearned = {
+        ...learnedMistakesRef.current,
+        [mistakeKey]: learnedEntry
+      };
+
+      learnedMistakesRef.current = nextLearned;
+      setLearnedMistakes(nextLearned);
+      setAllTimeMistakes((prev) => removeWordFromMistakeMap(prev, word));
+      setMistakes((prev) => removeWordFromMistakeMap(prev, word));
       saveInBackground(saveCoverage(word, "success"));
-      await saveLearnedMistake(word);
+      await saveLearnedMistake(mistakeKey);
       setScore((prev) => ({
         correct: prev.correct + 1,
         attempted: prev.attempted + 1
@@ -1020,6 +1082,39 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
+  function getWordLevelLabel(word) {
+    const level = wordLevels[word] || "Mistakes";
+
+    return level.startsWith("Level") ? `L${level.replace("Level", "")}` : "M";
+  }
+
+  function isLearnedWord(word) {
+    const lowerWord = word.toLowerCase();
+
+    return Object.keys(learnedMistakes).some(
+      (learnedWord) => learnedWord.toLowerCase() === lowerWord
+    );
+  }
+
+  function filterLearnedMistakes(mistakeList) {
+    return Object.fromEntries(
+      Object.entries(mistakeList).filter(([word]) => !isLearnedWord(word))
+    );
+  }
+
+  function removeWordFromMistakeMap(mistakeList, word) {
+    const lowerWord = word.toLowerCase();
+    const nextMistakes = { ...mistakeList };
+
+    Object.keys(nextMistakes).forEach((mistakeWord) => {
+      if (mistakeWord.toLowerCase() === lowerWord) {
+        delete nextMistakes[mistakeWord];
+      }
+    });
+
+    return nextMistakes;
+  }
+
   function renderMistakeList(mistakeList, emptyText, options = {}) {
     if (Object.keys(mistakeList).length === 0) {
       return <p>{emptyText}</p>;
@@ -1037,6 +1132,9 @@ export default function App() {
               return (
                 <tr key={word}>
                   <td style={styles.mistakeWordCell}>
+                    <span style={styles.parentLevelBadge}>
+                      {getWordLevelLabel(word)}
+                    </span>
                     {word}
                     {options.showParentActions && (
                       <button
@@ -1102,7 +1200,12 @@ export default function App() {
             .sort((a, b) => a[0].localeCompare(b[0]))
             .map(([word, details]) => (
               <tr key={word}>
-                <td>{word}</td>
+                <td style={styles.mistakeWordCell}>
+                  <span style={styles.parentLevelBadge}>
+                    {getWordLevelLabel(word)}
+                  </span>
+                  {word}
+                </td>
                 <td>{details.mistakeCount || 0}</td>
               </tr>
             ))}
@@ -1348,35 +1451,42 @@ export default function App() {
   }
 
   function renderMistakeCard(options = {}) {
+    const sessionMistakes = options.showParentActions
+      ? filterLearnedMistakes(mistakes)
+      : mistakes;
+    const visibleAllTimeMistakes = options.showParentActions
+      ? filterLearnedMistakes(allTimeMistakes)
+      : allTimeMistakes;
+
     return (
       <div style={styles.card}>
         <h2>Session Mistakes</h2>
         <p style={styles.mistakeTotal}>
-          Total: {totalMistakes(mistakes)}
+          Total: {totalMistakes(sessionMistakes)}
         </p>
 
         {renderMistakeList(
-          mistakes,
+          sessionMistakes,
           "No session mistakes yet.",
           options
         )}
 
         <button
           onClick={() =>
-            downloadMistakesFile(mistakes, "spelling-bee-session-mistakes.csv")
+            downloadMistakesFile(sessionMistakes, "spelling-bee-session-mistakes.csv")
           }
-          disabled={!Object.keys(mistakes).length}
+          disabled={!Object.keys(sessionMistakes).length}
         >
           Download Session CSV
         </button>
 
         <h2 style={styles.allTimeHeading}>All Time Mistakes</h2>
         <p style={styles.mistakeTotal}>
-          Total: {totalMistakes(allTimeMistakes)}
+          Total: {totalMistakes(visibleAllTimeMistakes)}
         </p>
 
         {renderMistakeList(
-          allTimeMistakes,
+          visibleAllTimeMistakes,
           "No all-time mistakes yet.",
           options
         )}
@@ -1384,11 +1494,11 @@ export default function App() {
         <button
           onClick={() =>
             downloadMistakesFile(
-              allTimeMistakes,
+              visibleAllTimeMistakes,
               "spelling-bee-all-time-mistakes.csv"
             )
           }
-          disabled={!Object.keys(allTimeMistakes).length}
+          disabled={!Object.keys(visibleAllTimeMistakes).length}
         >
           Download All Time CSV
         </button>
@@ -1749,7 +1859,10 @@ const styles = {
   },
   mistakeWordCell: {
     fontWeight: "bold",
-    whiteSpace: "nowrap"
+    whiteSpace: "nowrap",
+    display: "flex",
+    alignItems: "center",
+    gap: 8
   },
   mistakeDetailCell: {
     fontSize: 13,
